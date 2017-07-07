@@ -27,7 +27,7 @@ const int KEY_SPACE = 32;
 const int KEY_ESC = 27;
 
 //Size that image will be warped to.
-const int X_SIZE = 400;
+const int X_SIZE = 350;
 const int Y_SIZE = 400;
 
 // parameters for motorcycle detection. MAX_WIDTH prevents larger objects being detected.
@@ -77,9 +77,13 @@ int main(int argc, char **argv)
   
   //Parameters that don't need to be global ----------------------------------------------------------------------------
 
+  //learning rate for the background subtractor. The higher it is, the more it can adjust to moving noise.
+  //the lower it is, the better it will detect any movement (true positives)
+  const int LEARNING_RATE = .1;
+
   //Threshold value for detecting movement blobs. 255 - most difference, 0 - no difference.
   //make higher to reduce noise and prevent overlap, make lower to ensure vehicles are each one blob.
-  const int MIN_THRESH = 35;
+  const int MIN_THRESH = 135;
 
   //Rate at which program prints information on count of vehicles and average velocities. 
   const int SAVE_RATE = 8000;
@@ -88,7 +92,7 @@ int main(int argc, char **argv)
   const int MIN_VELOCITY = 6;
 
   //Detects cars every __ frames. On other frames, tracks.
-  const int DETECT_RATE = 4;
+  const int DETECT_RATE = 3;
 
   //for mean shift algorithm for detection.
   const int MAX_ITER = 2;
@@ -98,9 +102,6 @@ int main(int argc, char **argv)
 
   //number of frames for subtractor to remember
   const int HISTORY = 200;
-
-  //number of images to initialiaze background subtractor. Used to make median image.
-  const int INIT_IMAGES = 300;
 
   //for measuring time to calculate motorcycles per hour
   clock_t start;
@@ -116,9 +117,6 @@ int main(int argc, char **argv)
   std::vector<double> moto_velocities;
   std::vector<double> car_velocities;
 
-  //loop counter variable
-  unsigned long i = 0;
-
   // user inputted distance
   if (argc >=2)
     {
@@ -128,6 +126,8 @@ int main(int argc, char **argv)
   // end parameters ---------------------------------------------------------------------------------------------------
     
   cv::Mat frame, fgMask, frame32f, dst;
+
+  cv::BackgroundSubtractorMOG2 subtractor(HISTORY,10,false);
 
   //used for mean shift
   cv::TermCriteria criteria(MAX_ITER,MAX_ITER,MS_EPSILON);
@@ -200,97 +200,63 @@ int main(int argc, char **argv)
 	}
     }
 
-  //allow background to initialize before starting detection ------------------------
-  
-  cv::Mat average;
-  cv::cvtColor(dst,dst,CV_BGR2GRAY);
-  average = dst.clone();
-  average.setTo(cv::Scalar(0,0,0));
+  //input key
+  char key = '\0';
 
-  unsigned char (*image_values)[Y_SIZE][X_SIZE] = new unsigned char [INIT_IMAGES][Y_SIZE][X_SIZE];
-  
-  for (i=0; i<INIT_IMAGES; i++)
+  //number of vehicles/motorcycles that have passed.
+  int count = 0;
+  //left and right prohibited areas
+  int leftcount = 0;
+  int rightcount = 0;
+
+  start = clock();
+  unsigned long i = 0;
+
+  //allow background to initialize before starting detection ------------------------
+  //const int dimensions []= {Y_SIZE, X_SIZE, 3};
+  //cv::Mat average = cv::Mat::zeros(3,dimensions,CV_32F);
+  cv::Mat average;
+  dst.convertTo(average,CV_32F);
+  average.setTo(cv::Scalar(0,0,0));
+  for (;i<300;i++)
   {
     cap >> dst;
 
     if (dst.empty() || dst.rows == 0 || dst.cols == 0)
       break;
-
-    cv::cvtColor(dst,dst,CV_BGR2GRAY);
+      
     cv::warpPerspective(dst,frame,transform_matrix,cv::Size(X_SIZE,Y_SIZE));
-    for (int y = 0; y < Y_SIZE; y ++)
-      {
-	for (int x = 0; x < X_SIZE; x++)
-	  {
-	    image_values[i][y][x] = frame.at<uchar>(x,y);
-	  }
-      }
+    frame.convertTo(frame32f,CV_32F);
+    average += frame32f;
+    
+    //subtractor.operator()(frame,fgMask,LEARNING_RATE/3);
+
+    //	  cv::threshold(fgMask,fgMask,MIN_THRESH,255,CV_THRESH_BINARY);
+    //	  Erosion(fgMask,4);
+    //	  cv::blur(fgMask,fgMask,cv::Size(3,3));
+    //	  cv::threshold(fgMask,fgMask,MIN_THRESH,255,CV_THRESH_BINARY);
+    //	  Dilation(fgMask,2);
   }
-
-  //now sorting images. Not working?
-  for (int y = 0; y < Y_SIZE; y++)
-    {
-      for (int x = 0; x < X_SIZE; x++)
-	{
-	  bool sort = true;
-	  while (sort)
-	    {
-	      sort = false;
-	      for (i = 1; i < INIT_IMAGES; i++)
-		{
-		  //enters into loop...
-		  if ((int)image_values[i-1][y][x] > (int)image_values[i][y][x])
-		    {
-		      sort = true;
-		      unsigned char low = image_values[i][y][x];
-		      image_values[i][y][x] = image_values[i-1][y][x];
-		      image_values[i-1][y][x] = low;
-		    }
-		}
-	    }
-	}
-    }
-
-  //now take average image.
-  //correctly assigning image values
-  for (int y = 0; y < Y_SIZE; y++)
-    {
-      for (int x = 0; x < X_SIZE; x++)
-	{
-	  average.at<uchar>(x,y) = image_values[INIT_IMAGES / 2][y][x];
-	}
-    }
-
-  delete [] image_values;
-  
-  //average.convertTo(frame,frame.type());
-  //average = frame.clone();
-  cv::imshow("Perspective transform",average);
+  average *= 1/(float)i;
+  average.convertTo(frame,frame.type());
+  cv::imshow("Perspective transform",frame);
+  cv::waitKey(0);
+  subtractor.operator()(frame,fgMask,1);
+  //std::cout << fgMask.channels() << std::endl;
+  //subtractor.getBackgroundImage(fgMask);
 
   // Done initializing background ---------------------------------------------------
 
   cv::namedWindow("Frame", 1);
   cv::namedWindow("Mask", 1);
 
-  //input key
-  char key = '\0';
-
-  //number of vehicles/motorcycles that have passed.
-  int count = 0;
-  
-  //left and right prohibited areas
-  int leftcount = 0;
-  int rightcount = 0;
-
-  start = clock();
-
   // Main loop ----------------------------------------------------------------------
   while(true)
     {
       count = 0;
-      leftcount = 0;
-      rightcount = 0;
-      i = 0;
+      leftcount =0;
+      rightcount =0;
+      i=0;
       for(;i < SAVE_RATE; i++)
 	{
 	  cap >> dst;
@@ -299,16 +265,20 @@ int main(int argc, char **argv)
 	    break;
 	  
 	  // Perform perspective transformation
-	  cv::cvtColor(dst,fgMask,CV_BGR2GRAY);
-	  cv::warpPerspective(fgMask,frame,transform_matrix,cv::Size(X_SIZE,Y_SIZE));
+	  cv::warpPerspective(dst,frame,transform_matrix,cv::Size(X_SIZE,Y_SIZE));
 
 	  //backgroundsubtraction
-	  cv::absdiff(average,frame,dst);
-	  dst.convertTo(fgMask,0);
+	  subtractor.operator()(frame,fgMask,LEARNING_RATE);
+	  std::cout << fgMask.type() << "  channels: " << fgMask.channels() << std::endl;
 	  
 	  //preprocessing to conglomerate vehicle blobs --------------------------------------------------
+	  //Dilation(fgMask,3);
+	  cv::threshold(fgMask,fgMask,MIN_THRESH,255,CV_THRESH_BINARY);
 	  Erosion(fgMask,4);
-	  Dilation(fgMask,4);
+	  cv::blur(fgMask,fgMask,cv::Size(3,3));
+	  cv::threshold(fgMask,fgMask,MIN_THRESH,255,CV_THRESH_BINARY);
+	  Dilation(fgMask,2);
+
 	  //preprocessing complete ----------------------------------------------------------------------
 	  
 	  //counting vehicles that have passed the half way point
@@ -323,14 +293,13 @@ int main(int argc, char **argv)
 	      objects.at(j) = objects.at(j) & cv::Rect(0,0,frame.cols, frame.rows);
 
 	      //count passed motorcycles
-	      if((objects.at(j).y >= (2*frame.rows/3) ) && vehicleType.at(j))
+	      if(objects.at(j).y + objects.at(j).height / 2 >= 2*frame.rows/3 && vehicleType.at(j))
 		{
 		  passedVehicles.push_back(true);
 		  
 		  // filled with dummy values to prevent out of bounds error
 		  for (int k = previousVehicles.size(); k<= j; k++)
 		    previousVehicles.push_back(true);
-
 		  if( !previousVehicles.at(j) )
 		    {
 		      count++;
@@ -389,22 +358,6 @@ int main(int argc, char **argv)
 	      objects.clear();
 	      
 	      Contours(fgMask);
-
-	      //put in locations of previous vehicles for counting
-	      for (unsigned int j =0; j < objects.size(); j++)
-		{
-		  //count passed motorcycles
-		  if((objects.at(j).y >= (2*frame.rows/3) ) && vehicleType.at(j))
-		    {
-		      previousVehicles.push_back(true);
-		    }
-		  else if (vehicleType.at(j))
-		    {
-		      previousVehicles.push_back(false);
-		    }
-		}
-
-	      //need to count previous vehicles? Yes.
 	    }
 
 	  //showing the mask for debugging and optimization of background subtraction parameters
@@ -498,14 +451,14 @@ void Contours(cv::Mat &img)
 	  if (ROI.width < MAX_WIDTH && ROI.height > MIN_HEIGHT && ROI.width > MIN_WIDTH && ROI.height < MAX_HEIGHT && ROI.width < (ROI.height+15))
 	    {
 	      objects.push_back(ROI);
-	      initial_pos.push_back(ROI.y);
+	      initial_pos.push_back(ROI.y + ROI.height / 2);
 	      vehicleType.push_back(true);
 	    }
 	  //now checking for larger vehicles
 	  else if(ROI.width >= MAX_WIDTH && ROI.height > MIN_HEIGHT)
 	    {
 	      objects.push_back(ROI);
-	      initial_pos.push_back(ROI.y);
+	      initial_pos.push_back(ROI.y + ROI.height / 2);
 	      vehicleType.push_back(false);
 	    }
 	}
