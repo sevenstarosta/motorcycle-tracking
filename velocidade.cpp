@@ -16,9 +16,9 @@ PARAMETERS / USAGE:
 
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
-#include <opencv2/core/core.hpp>
+//#include <opencv2/core/core.hpp>
 #include <opencv2/video/video.hpp>
-#include <opencv2/video/tracking.hpp>
+//#include <opencv2/video/tracking.hpp>
 
 #include <iostream>
 #include <vector>
@@ -65,6 +65,7 @@ std::vector <cv::Rect> objects;
 //initial y position of vehicles before tracking
 std::vector<double> initial_pos;
 std::vector<double> initial_x;
+std::vector<double> second_x;
 
 // for drawing prohibited areas.
 bool clicked = false;
@@ -77,6 +78,14 @@ void onMouse(int event, int x, int y, int f, void*);
 void leftShoulder(int event, int x, int y, int f, void*);
 void rightShoulder(int event, int x, int y, int f, void*);
 void drawLane(int event, int x, int y, int f, void*);
+
+struct position
+{
+  //can infer last x and last y during loop, thus do not need to save.
+  double y;
+  double firstx;
+  double secondx;
+};
 
 int main(int argc, char **argv)
 {
@@ -107,7 +116,7 @@ int main(int argc, char **argv)
   const int INIT_IMAGES = 300;
 
   //max distance from lane lines to be counted to inter-lane vehicles.
-  const int LANE_THRESH = 10;
+  int LANE_THRESH = 10;
 
   //number of lanes to draw
   int number_lanes = 0;
@@ -139,6 +148,7 @@ int main(int argc, char **argv)
   int leftcount = 0;
   int rightcount = 0;
   int interlanecount = 0;
+  int zigzagcount = 0;
 
   int drawleft = 1;
   int drawright = 1;
@@ -160,7 +170,12 @@ int main(int argc, char **argv)
   
   if(argc >= 5)
     {
-      length_kmeters = atof(argv[1])/1000.0d;
+      LANE_THRESH = atoi(argv[4]);
+
+    }
+  if(argc >= 6)
+    {
+      length_kmeters = atof(argv[5])/1000.0d;
     }
 
   // end parameters ---------------------------------------------------------------------------------------------------
@@ -170,7 +185,7 @@ int main(int argc, char **argv)
   //used for mean shift
   cv::TermCriteria criteria(MAX_ITER,MAX_ITER,MS_EPSILON);
 
-  cv::VideoCapture cap("Video_1.avi");
+  cv::VideoCapture cap("https://d1h84if288zv9w.cloudfront.net/7dias/0be3_477.stream/chunklist.m3u8");
   
   if(!cap.isOpened())
     {
@@ -194,6 +209,7 @@ int main(int argc, char **argv)
   // Done capturing user input for perspective transform ---------------------
 
   cv::Mat transform_matrix = cv::getPerspectiveTransform(source_points,dst_points);
+  //std::cout << transform_matrix << std::endl;
   cv::warpPerspective(frame,dst,transform_matrix,cv::Size(X_SIZE,Y_SIZE));
   cv::imshow("Perspective transform",dst);
 
@@ -249,7 +265,7 @@ int main(int argc, char **argv)
 	  char c = cv::waitKey(1);
 	  if (c == 27) break;
 	}
-      cv::line(dst,cv::Point(lanes.at(lanenumber),0),cv::Point(lanes.at(lanenumber),dst.rows-1),cv::Scalar(0,255,0),2);
+      cv::line(dst,cv::Point(lanes.at(lanenumber),0),cv::Point(lanes.at(lanenumber),dst.rows-1),cv::Scalar(0,255,0),LANE_THRESH);
     }
 
   cv::setMouseCallback("Perspective transform",NULL,NULL);
@@ -263,9 +279,11 @@ int main(int argc, char **argv)
       length_kmeters = atof(distance_input.c_str())/1000.0d;
       if (length_kmeters <= 0)
 	{
-	  length_kmeters = 1;
+	  length_kmeters = .01;
 	}
     }
+
+  //std::cout << transform_matrix << std::endl;
 
   cv::namedWindow("Frame", 1);
   cv::namedWindow("Mask", 1);
@@ -287,8 +305,7 @@ int main(int argc, char **argv)
       cv::cvtColor(dst,dst,CV_BGR2GRAY);
       average = dst.clone();
       average.setTo(cv::Scalar(0,0,0));
-
-      unsigned char (*image_values)[Y_SIZE][X_SIZE] = new unsigned char [INIT_IMAGES][Y_SIZE][X_SIZE];
+      unsigned char (*image_values) = new unsigned char [INIT_IMAGES*Y_SIZE*X_SIZE];
       
       for (i=0; i<INIT_IMAGES; i++)
 	{
@@ -303,7 +320,7 @@ int main(int argc, char **argv)
 	    {
 	      for (int x = 0; x < X_SIZE; x++)
 		{
-		  image_values[i][y][x] = frame.at<uchar>(x,y);
+		  image_values[Y_SIZE*X_SIZE*i + X_SIZE * y + x] = frame.at<uchar>(x,y);
 		}
 	    }
 	}
@@ -319,12 +336,12 @@ int main(int argc, char **argv)
 		  sort = false;
 		  for (i = 1; i < INIT_IMAGES; i++)
 		    {
-		      if ((int)image_values[i-1][y][x] > (int)image_values[i][y][x])
+		      if ((int)image_values[Y_SIZE*X_SIZE*(i-1) + X_SIZE * y + x] > (int)image_values[Y_SIZE*X_SIZE*i + X_SIZE * y + x])
 			{
 			  sort = true;
-			  unsigned char low = image_values[i][y][x];
-			  image_values[i][y][x] = image_values[i-1][y][x];
-			  image_values[i-1][y][x] = low;
+			  unsigned char low = image_values[Y_SIZE*X_SIZE*i + X_SIZE * y + x];
+			  image_values[Y_SIZE*X_SIZE*i + X_SIZE * y + x] = image_values[Y_SIZE*X_SIZE*(i-1) + X_SIZE * y + x];
+			  image_values[Y_SIZE*X_SIZE*(i-1) + X_SIZE * y + x] = low;
 			}
 		    }
 		}
@@ -336,7 +353,7 @@ int main(int argc, char **argv)
 	{
 	  for (int x = 0; x < X_SIZE; x++)
 	    {
-	      average.at<uchar>(x,y) = image_values[INIT_IMAGES / 2][y][x];
+	      average.at<uchar>(x,y) = image_values[Y_SIZE*X_SIZE*(INIT_IMAGES / 2) + X_SIZE * y + x];
 	    }
 	}
       
@@ -389,7 +406,7 @@ int main(int argc, char **argv)
 		  if( !previousVehicles.at(j) )
 		    {
 		      count++;
-		      std::cout << "Number of Motorcycles:   " << count << std::endl;
+		      //std::cout << "Number of Motorcycles:   " << count << std::endl;
 		      if (objects.at(j).x  <= leftX)
 			{
 			  leftcount++;
@@ -404,6 +421,7 @@ int main(int argc, char **argv)
 			  if (objects.at(j).x - lanes.at(k) < LANE_THRESH && objects.at(j).x - lanes.at(k) > -1 * LANE_THRESH && initial_x.at(j) - lanes.at(k) < LANE_THRESH && initial_x.at(j) - lanes.at(k) > -1 * LANE_THRESH)
 			    {
 			      interlanecount++;
+				cv::rectangle(frame, objects.at(j), cv::Scalar(0,255,0),2,1);
 			    }
 			}
 		    }
@@ -416,15 +434,13 @@ int main(int argc, char **argv)
 	      //measuring velocity of detected vehicles. 
 	      if (i % DETECT_RATE == 0 && (objects.at(j).y + objects.at(j).height < frame.rows -4))
 		{
-		  //by framerate in video. may be encoded inaccurately.
-		  //double velocity = 3600 * ((double) cap.get(CV_CAP_PROP_FPS) / (double) DETECT_RATE) * (objects.at(j).y - initial_pos.at(j) ) * length_kmeters / frame.rows;
 		  //by clock speed.
-		  double velocity = 3600 * ((std::clock() - start_inner)  / (double) CLOCKS_PER_SEC) * (objects.at(j).y - initial_pos.at(j)) * length_kmeters / frame.rows;
-		  
+		  double velocity = 3600 * ((double) cap.get(CV_CAP_PROP_FPS) / (double) DETECT_RATE) * (objects.at(j).y - initial_pos.at(j) ) * length_kmeters / frame.rows;
+		  //double velocity = 3600 * ((std::clock() - start_inner)  / (double) CLOCKS_PER_SEC) * (objects.at(j).y - initial_pos.at(j)) * length_kmeters / (double)frame.rows;
 		  //discard false positives and vehicles lost by the tracker
 		  if (velocity > MIN_VELOCITY && vehicleType.at(j))
 		    {
-		      std::cout << "Velocity: " << velocity << std::endl;
+		      //std::cout << "Velocity: " << velocity << std::endl;
 		      moto_velocities.push_back(velocity);
 		    }
 		  //Not motorycle
@@ -439,6 +455,14 @@ int main(int argc, char **argv)
 	      if (vehicleType.at(j))
 		{
 		  cv::rectangle(frame, objects.at(j), cv::Scalar(255,0,0),2,1);
+		for(int k = 0; k < number_lanes;k++)
+			{
+			  if (objects.at(j).x - lanes.at(k) < LANE_THRESH && objects.at(j).x - lanes.at(k) > -1 * LANE_THRESH && initial_x.at(j) - lanes.at(k) < LANE_THRESH && initial_x.at(j) - lanes.at(k) > -1 * LANE_THRESH)
+			    {
+				cv::rectangle(frame, objects.at(j), cv::Scalar(0,255,0),2,1);
+			    }
+			}
+
 		}
 	      //other vehicles
 	      else
@@ -446,9 +470,24 @@ int main(int argc, char **argv)
 		  cv::rectangle(frame, objects.at(j), cv::Scalar(0,0,255),2,1);
 		}
 	    }
+	  //record middle x value for zig zag behavior
+	  if (i% DETECT_RATE == DETECT_RATE / 2)
+	    {
+	      for (unsigned int j = 0; j < objects.size(); j++)
+		{
+		  second_x.push_back(objects.at(j).x);
+		}
+	    }
 	  
 	  if (i% DETECT_RATE ==0)
-	    {	      
+	    {
+	      //count vehicles moving back and forth
+	      for (unsigned int j = 0; j < objects.size(); j++)
+		{
+		  if ( vehicleType.at(j) && ( (second_x.at(j) - initial_x.at(j)) * (objects.at(j).x - second_x.at(j)) < 0))
+		    zigzagcount++;
+		}
+	      
 	      previousVehicles.clear();
 	      initial_pos.clear();
 	      initial_x.clear();
@@ -479,7 +518,7 @@ int main(int argc, char **argv)
 	  cv::imshow("frame",frame); 
 	  
 	  //space for pause, escape or q to quit
-	  key = cv::waitKey(1);
+	  key = cv::waitKey(250);
 	  if(key == KEY_SPACE)
 	    key = cv::waitKey(0);
 	  if(key == KEY_ESC || key == 'q')
@@ -509,7 +548,7 @@ int main(int argc, char **argv)
 	}
       average_car_velocity /= (double) car_velocities.size();
       
-      std::cout << "Average othere vehicle velocity, km/h : " << average_car_velocity << std::endl;
+      std::cout << "Average other vehicle velocity, km/h : " << average_car_velocity << std::endl;
       
       std::cout << "Motorcycles per hour: " << 3600 * count / duration << std::endl;
       
@@ -520,6 +559,8 @@ int main(int argc, char **argv)
       std::cout << "Number of motorcycles in right prohibited zone: " << rightcount << std::endl;
 
       std::cout << "Number of motorcycles in between lanes: " << interlanecount << std::endl;
+
+      std::cout << "Number of zig zaging motorcycles: " << zigzagcount << std::endl;
 
       if (dst.empty() || dst.rows == 0 || dst.cols == 0)
 	break;
