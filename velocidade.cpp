@@ -60,32 +60,27 @@ int lanenumber = 0;
 // for use in transformation drawing callback.
 int pointnumber = 0;
 
-std::vector <cv::Rect> objects;
-
-//initial y position of vehicles before tracking
-std::vector<double> initial_pos;
-std::vector<double> initial_x;
-std::vector<double> second_x;
-
 // for drawing prohibited areas.
 bool clicked = false;
 
+struct vehicle
+{
+  //can infer last x and last y during loop, thus do not need to save.
+  int initial_y = 0;
+  int initial_x = 0;
+  int second_x = 0;
+  bool type = false; //default not motorcycle
+  bool over_line = true; //default to already over the line
+};
+
 //Method prototypes
 void Erosion(cv::Mat &img,int radius);
-void Contours(cv::Mat &img);
+void Detect(cv::Mat &img, std::vector<cv::Rect> &objects, std::vector<vehicle> &vehicles);
 void Dilation(cv::Mat &img, int radius);
 void onMouse(int event, int x, int y, int f, void*);
 void leftShoulder(int event, int x, int y, int f, void*);
 void rightShoulder(int event, int x, int y, int f, void*);
 void drawLane(int event, int x, int y, int f, void*);
-
-struct position
-{
-  //can infer last x and last y during loop, thus do not need to save.
-  double y;
-  double firstx;
-  double secondx;
-};
 
 int main(int argc, char **argv)
 {
@@ -95,7 +90,8 @@ int main(int argc, char **argv)
 
   //Threshold value for detecting movement blobs. 255 - most difference, 0 - no difference.
   //make higher to reduce noise and prevent overlap, make lower to ensure vehicles are each one blob.
-  const int MIN_THRESH = 30;
+  //30 for cam 71
+  const int MIN_THRESH = 25;
 
   //Rate at which program prints information on count of vehicles and average velocities. 
   const int SAVE_RATE = 60000;
@@ -121,15 +117,18 @@ int main(int argc, char **argv)
   //number of lanes to draw
   int number_lanes = 0;
 
+  //for background subtraction. College INIT_IMAGES frames, then get the median value of each pixel
+  unsigned char (*image_values) = new unsigned char [INIT_IMAGES*Y_SIZE*X_SIZE];
+
   //for measuring time to calculate motorcycles per hour
   clock_t start_outer, start_inner;
   double duration =.01;
 
   // for measuring velocities. lenth_kmeters is the length in kilometers of the detection area.
   double length_kmeters = 1.0d;
-  
-  // final_pos holds the y values of vehicles at end stage of tracking. Used for comparison.
-  std::vector<double> final_pos;
+
+  std::vector<vehicle> vehicles;
+  std::vector <cv::Rect> objects;
 
   //hold velocities of vehicles. Get cleared every SAVE_RATE frames.
   std::vector<double> moto_velocities;
@@ -185,7 +184,8 @@ int main(int argc, char **argv)
   //used for mean shift
   cv::TermCriteria criteria(MAX_ITER,MAX_ITER,MS_EPSILON);
 
-  cv::VideoCapture cap("https://d1h84if288zv9w.cloudfront.net/7dias/0be3_477.stream/chunklist.m3u8");
+  //cv::VideoCapture cap("https://d1h84if288zv9w.cloudfront.net/7dias/0be3_477.stream/chunklist.m3u8");
+  cv::VideoCapture cap("Video_86.avi");
   
   if(!cap.isOpened())
     {
@@ -268,7 +268,10 @@ int main(int argc, char **argv)
       cv::line(dst,cv::Point(lanes.at(lanenumber),0),cv::Point(lanes.at(lanenumber),dst.rows-1),cv::Scalar(0,255,0),LANE_THRESH);
     }
 
+  //prevent more mouse input from causing errors
   cv::setMouseCallback("Perspective transform",NULL,NULL);
+
+  cv::imshow("Perspective transform", dst);
 
   //if no distance supplied as command line argument, require user to input distance.
   if (argc < 5)
@@ -305,7 +308,6 @@ int main(int argc, char **argv)
       cv::cvtColor(dst,dst,CV_BGR2GRAY);
       average = dst.clone();
       average.setTo(cv::Scalar(0,0,0));
-      unsigned char (*image_values) = new unsigned char [INIT_IMAGES*Y_SIZE*X_SIZE];
       
       for (i=0; i<INIT_IMAGES; i++)
 	{
@@ -357,7 +359,6 @@ int main(int argc, char **argv)
 	    }
 	}
       
-      delete [] image_values;
       // Done initializing background ---------------------------------------------------
 
       start_outer = std::clock();
@@ -378,14 +379,23 @@ int main(int argc, char **argv)
 	  cv::absdiff(average,dst,fgMask);
 	  
 	  //preprocessing to conglomerate vehicle blobs -------------------------------------------------
-	  Erosion(fgMask,4);
-	  Dilation(fgMask,3);
+	  Erosion(fgMask,3);
+	  // dilated 3 for cam 71
+	  Dilation(fgMask,4);
 	  cv::threshold(fgMask,fgMask,MIN_THRESH,255,3);
 	  //preprocessing complete ----------------------------------------------------------------------
 	  
 	  //counting vehicles that have passed the half way point
 	  previousVehicles = passedVehicles;
 	  passedVehicles.clear();
+
+	  if (i% DETECT_RATE == DETECT_RATE / 2)
+	    {
+	      for (unsigned int j = 0; j < objects.size(); j++)
+		{
+		  vehicles.at(j).second_x = objects.at(j).x;
+		}
+	    }
 	  
 	  //Going through tracked objects
 	  for (unsigned int j =0; j < objects.size(); j++)
@@ -395,15 +405,13 @@ int main(int argc, char **argv)
 	      objects.at(j) = objects.at(j) & cv::Rect(0,0,frame.cols, frame.rows);
 
 	      //count passed motorcycles
-	      if((objects.at(j).y >= (2*frame.rows/3) ) && vehicleType.at(j))
-		{
-		  passedVehicles.push_back(true);
-		  
-		  // filled with dummy values to prevent out of bounds error
-		  for (int k = previousVehicles.size(); k<= j; k++)
-		    previousVehicles.push_back(true);
+	      if((objects.at(j).y >= (2*frame.rows/3) ) && vehicles.at(j).type)
+		{		  
+		  //filled with dummy values to prevent out of bounds error
+		  //for (int k = previousVehicles.size(); k<= j; k++)
+		  //previousVehicles.push_back(true);
 
-		  if( !previousVehicles.at(j) )
+		  if( !vehicles.at(j).over_line )
 		    {
 		      count++;
 		      //std::cout << "Number of Motorcycles:   " << count << std::endl;
@@ -418,27 +426,34 @@ int main(int argc, char **argv)
 		      //check for proximity to lane lines.
 		      for(int k = 0; k < number_lanes;k++)
 			{
-			  if (objects.at(j).x - lanes.at(k) < LANE_THRESH && objects.at(j).x - lanes.at(k) > -1 * LANE_THRESH && initial_x.at(j) - lanes.at(k) < LANE_THRESH && initial_x.at(j) - lanes.at(k) > -1 * LANE_THRESH)
+			  if (objects.at(j).x - lanes.at(k) < LANE_THRESH && objects.at(j).x - lanes.at(k) > -1 * LANE_THRESH && vehicles.at(j).initial_x - lanes.at(k) < LANE_THRESH && vehicles.at(j).initial_x - lanes.at(k) > -1 * LANE_THRESH)
 			    {
 			      interlanecount++;
 				cv::rectangle(frame, objects.at(j), cv::Scalar(0,255,0),2,1);
 			    }
 			}
+
+		      //check for zigzag behavior
+		      if ( vehicles.at(j).type && ( (vehicles.at(j).second_x - vehicles.at(j).initial_x) * (objects.at(j).x - vehicles.at(j).second_x) < -10))
+			{
+			  zigzagcount++;
+			}
 		    }
+		  vehicles.at(j).over_line = true;
 		}
-	      else if (vehicleType.at(j))
-		{
-		  passedVehicles.push_back(false);
-		}
+	      //else if (vehichles.at(j).type)
+	      //	{
+	      //  vehicles.at(j).over_line = false;
+	      //}
 	      
 	      //measuring velocity of detected vehicles. 
 	      if (i % DETECT_RATE == 0 && (objects.at(j).y + objects.at(j).height < frame.rows -4))
 		{
 		  //by clock speed.
-		  double velocity = 3600 * ((double) cap.get(CV_CAP_PROP_FPS) / (double) DETECT_RATE) * (objects.at(j).y - initial_pos.at(j) ) * length_kmeters / frame.rows;
+		  double velocity = 3600 * ((double) cap.get(CV_CAP_PROP_FPS) / (double) DETECT_RATE) * (objects.at(j).y - vehicles.at(j).initial_y ) * length_kmeters / frame.rows;
 		  //double velocity = 3600 * ((std::clock() - start_inner)  / (double) CLOCKS_PER_SEC) * (objects.at(j).y - initial_pos.at(j)) * length_kmeters / (double)frame.rows;
 		  //discard false positives and vehicles lost by the tracker
-		  if (velocity > MIN_VELOCITY && vehicleType.at(j))
+		  if (velocity > MIN_VELOCITY && vehicles.at(j).type)
 		    {
 		      //std::cout << "Velocity: " << velocity << std::endl;
 		      moto_velocities.push_back(velocity);
@@ -452,17 +467,16 @@ int main(int argc, char **argv)
 	      
 	      //drawing tracked rectangle on original image
 	      //motorcycle
-	      if (vehicleType.at(j))
+	      if (vehicles.at(j).type)
 		{
 		  cv::rectangle(frame, objects.at(j), cv::Scalar(255,0,0),2,1);
-		for(int k = 0; k < number_lanes;k++)
+		  for(int k = 0; k < number_lanes;k++)
+		    {
+		      if (objects.at(j).x - lanes.at(k) < LANE_THRESH && objects.at(j).x - lanes.at(k) > -1 * LANE_THRESH && vehicles.at(j).initial_x - lanes.at(k) < LANE_THRESH && vehicles.at(j).initial_x - lanes.at(k) > -1 * LANE_THRESH)
 			{
-			  if (objects.at(j).x - lanes.at(k) < LANE_THRESH && objects.at(j).x - lanes.at(k) > -1 * LANE_THRESH && initial_x.at(j) - lanes.at(k) < LANE_THRESH && initial_x.at(j) - lanes.at(k) > -1 * LANE_THRESH)
-			    {
-				cv::rectangle(frame, objects.at(j), cv::Scalar(0,255,0),2,1);
-			    }
+			  cv::rectangle(frame, objects.at(j), cv::Scalar(0,255,0),2,1);
 			}
-
+		    } 
 		}
 	      //other vehicles
 	      else
@@ -470,45 +484,13 @@ int main(int argc, char **argv)
 		  cv::rectangle(frame, objects.at(j), cv::Scalar(0,0,255),2,1);
 		}
 	    }
-	  //record middle x value for zig zag behavior
-	  if (i% DETECT_RATE == DETECT_RATE / 2)
-	    {
-	      for (unsigned int j = 0; j < objects.size(); j++)
-		{
-		  second_x.push_back(objects.at(j).x);
-		}
-	    }
 	  
-	  if (i% DETECT_RATE ==0)
-	    {
-	      //count vehicles moving back and forth
-	      for (unsigned int j = 0; j < objects.size(); j++)
-		{
-		  if ( vehicleType.at(j) && ( (second_x.at(j) - initial_x.at(j)) * (objects.at(j).x - second_x.at(j)) < 0))
-		    zigzagcount++;
-		}
-	      
-	      previousVehicles.clear();
-	      initial_pos.clear();
-	      initial_x.clear();
-	      vehicleType.clear();
+	  if (i % DETECT_RATE == 0)
+	    { 
+	      vehicles.clear();
 	      objects.clear();
 	      
-	      Contours(fgMask);
-
-	      //put in locations of previous vehicles for counting
-	      for (unsigned int j =0; j < objects.size(); j++)
-		{
-		  //count passed motorcycles
-		  if((objects.at(j).y >= (2*frame.rows/3) ) && vehicleType.at(j))
-		    {
-		      previousVehicles.push_back(true);
-		    }
-		  else if (vehicleType.at(j))
-		    {
-		      previousVehicles.push_back(false);
-		    }
-		}
+	      Detect(fgMask,objects,vehicles);
 	      start_inner = std::clock();
 	    }
 
@@ -569,6 +551,7 @@ int main(int argc, char **argv)
 	break;
       
     }
+  delete[] image_values;
   cap.release();
   cvDestroyAllWindows();
   return 0;
@@ -586,7 +569,7 @@ void Dilation(cv::Mat &img, int radius)
   cv::dilate(img,img,element);
 }
 
-void Contours(cv::Mat &img)
+void Detect(cv::Mat &img, std::vector<cv::Rect> &objects, std::vector<vehicle> &vehicles)
 {
   cv::Mat canny_output;
   cv::Rect ROI;
@@ -600,7 +583,7 @@ void Contours(cv::Mat &img)
 
   for(int i =0; i < contours.size(); i++ )
     {
-      if (arcLength(contours.at(i),true) > 70)
+      if (arcLength(contours.at(i),true) > 50)
 	{ 
 	  ROI = cv::boundingRect(contours.at(i));
 	  
@@ -608,17 +591,19 @@ void Contours(cv::Mat &img)
 	  if (ROI.width < MAX_WIDTH && ROI.height > MIN_HEIGHT && ROI.width > MIN_WIDTH && ROI.height < MAX_HEIGHT && ROI.width < (ROI.height+15))
 	    {
 	      objects.push_back(ROI);
-	      initial_pos.push_back(ROI.y);
-	      initial_x.push_back(ROI.x);
-	      vehicleType.push_back(true);
+	      if (ROI.y > 2 * img.rows / 3)
+		vehicles.push_back({ROI.y,ROI.x,ROI.x,true,true});
+	      else
+		vehicles.push_back({ROI.y,ROI.x,ROI.x,true,false});
 	    }
 	  //now checking for larger vehicles
 	  else if(ROI.width >= MAX_WIDTH && ROI.height > MIN_HEIGHT)
 	    {
 	      objects.push_back(ROI);
-	      initial_pos.push_back(ROI.y);
-	      initial_x.push_back(ROI.x);
-	      vehicleType.push_back(false);
+	      if (ROI.y > 2 * img.rows / 3)
+		vehicles.push_back({ROI.y,ROI.x,ROI.x,false,true});
+	      else
+		vehicles.push_back({ROI.y,ROI.x,ROI.x,false,false});
 	    }
 	}
     }
