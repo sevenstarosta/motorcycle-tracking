@@ -2,23 +2,20 @@
 This program is used to detect motorcycles on a designated area of the screen.
 Click four times to designate the area of the screen to detect. Start with the
 upper left and go clockwise. Then, drag the red line to indicate a prohibited 
-zone to the left. Hit esc when finished. Then drag the blue line to indicated
-a prohibited zone to the right. When finished, hit esc. The program with run
-automatically.
+zone to the left, and drag the blue line with the mouse to indicate a prohibited area to the right. Hit esc when finished after each drawing. Then drag lines to indicate lanes, if any. The program with run
+automatically after pressing escape.
 
-Once running, hit q or esc to quit, or space to pause/unpause.
+Once running, press q or esc to quit, or space to pause/unpause.
 
-PARAMETERS / USAGE:
+PARAMETERS / USAGE: all parameters optional. Defaults to not drawing lanes and prohibited areas.
 
-./velocidade [distance of area drawn]
+./velocidade [0 = don't draw left, any other value draws] [draw right] [number of lanes to draw] [lane detection width in pixels] [distance of area drawn for velocity measurement]
 
 */
 
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
-//#include <opencv2/core/core.hpp>
 #include <opencv2/video/video.hpp>
-//#include <opencv2/video/tracking.hpp>
 
 #include <iostream>
 #include <vector>
@@ -39,15 +36,9 @@ const int MAX_HEIGHT = Y_SIZE / 3;
 const int MIN_HEIGHT = Y_SIZE / 6;
 const int MIN_WIDTH = X_SIZE / 13;
 
-// Perspective transformation
+// Perspective transformation points
 cv::Point2f source_points[] = {cv::Point2f(0,0),cv::Point2f(0,0),cv::Point2f(0,0),cv::Point2f(0,0)};
 cv::Point2f dst_points[] = {cv::Point2f(0,0), cv::Point2f(X_SIZE,0),cv::Point2f(X_SIZE,Y_SIZE),cv::Point2f(0,Y_SIZE)};
-
-//for counting motorcycles
-std::vector <bool> passedVehicles;
-std::vector <bool> previousVehicles;
-//if true, then motorcycle. If not, then other vehicle.
-std::vector <bool> vehicleType;
 
 //for shoulder detection. Hold values for limits of prohibited/interest zones
 int leftX = 0;
@@ -91,7 +82,7 @@ int main(int argc, char **argv)
   //Threshold value for detecting movement blobs. 255 - most difference, 0 - no difference.
   //make higher to reduce noise and prevent overlap, make lower to ensure vehicles are each one blob.
   //30 for cam 71
-  const int MIN_THRESH = 25;
+  const int MIN_THRESH = 27;
 
   //Rate at which program prints information on count of vehicles and average velocities. 
   const int SAVE_RATE = 60000;
@@ -119,7 +110,7 @@ int main(int argc, char **argv)
 
   //for background subtraction. College INIT_IMAGES frames, then get the median value of each pixel
   unsigned char (*image_values) = new unsigned char [INIT_IMAGES*Y_SIZE*X_SIZE];
-
+  
   //for measuring time to calculate motorcycles per hour
   clock_t start_outer, start_inner;
   double duration =.01;
@@ -185,7 +176,7 @@ int main(int argc, char **argv)
   cv::TermCriteria criteria(MAX_ITER,MAX_ITER,MS_EPSILON);
 
   //cv::VideoCapture cap("https://d1h84if288zv9w.cloudfront.net/7dias/0be3_477.stream/chunklist.m3u8");
-  cv::VideoCapture cap("Video_86.avi");
+  cv::VideoCapture cap("Video_1.avi");
   
   if(!cap.isOpened())
     {
@@ -209,6 +200,7 @@ int main(int argc, char **argv)
   // Done capturing user input for perspective transform ---------------------
 
   cv::Mat transform_matrix = cv::getPerspectiveTransform(source_points,dst_points);
+  cv::Mat inverse_matrix = cv::getPerspectiveTransform(dst_points,source_points);
   //std::cout << transform_matrix << std::endl;
   cv::warpPerspective(frame,dst,transform_matrix,cv::Size(X_SIZE,Y_SIZE));
   cv::imshow("Perspective transform",dst);
@@ -322,7 +314,7 @@ int main(int argc, char **argv)
 	    {
 	      for (int x = 0; x < X_SIZE; x++)
 		{
-		  image_values[Y_SIZE*X_SIZE*i + X_SIZE * y + x] = frame.at<uchar>(x,y);
+		  image_values[X_SIZE * INIT_IMAGES * y + INIT_IMAGES * x + i] = frame.at<uchar>(x,y);
 		}
 	    }
 	}
@@ -332,21 +324,8 @@ int main(int argc, char **argv)
 	{
 	  for (int x = 0; x < X_SIZE; x++)
 	    {
-	      bool sort = true;
-	      while (sort)
-		{
-		  sort = false;
-		  for (i = 1; i < INIT_IMAGES; i++)
-		    {
-		      if ((int)image_values[Y_SIZE*X_SIZE*(i-1) + X_SIZE * y + x] > (int)image_values[Y_SIZE*X_SIZE*i + X_SIZE * y + x])
-			{
-			  sort = true;
-			  unsigned char low = image_values[Y_SIZE*X_SIZE*i + X_SIZE * y + x];
-			  image_values[Y_SIZE*X_SIZE*i + X_SIZE * y + x] = image_values[Y_SIZE*X_SIZE*(i-1) + X_SIZE * y + x];
-			  image_values[Y_SIZE*X_SIZE*(i-1) + X_SIZE * y + x] = low;
-			}
-		    }
-		}
+	      int offset = X_SIZE * INIT_IMAGES * y + INIT_IMAGES * x;
+	      std::sort(image_values + offset, image_values + offset +INIT_IMAGES);
 	    }
 	}
       
@@ -355,13 +334,13 @@ int main(int argc, char **argv)
 	{
 	  for (int x = 0; x < X_SIZE; x++)
 	    {
-	      average.at<uchar>(x,y) = image_values[Y_SIZE*X_SIZE*(INIT_IMAGES / 2) + X_SIZE * y + x];
+	      average.at<uchar>(x,y) = image_values[X_SIZE * INIT_IMAGES * y + INIT_IMAGES * x + INIT_IMAGES / 2];
 	    }
 	}
+
+      std::cout << "Init time: " << (std::clock() - start_outer) / (double) CLOCKS_PER_SEC << std::endl;
       
       // Done initializing background ---------------------------------------------------
-
-      start_outer = std::clock();
       
       // inner loop >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
       for(;i < SAVE_RATE; i++)
@@ -374,9 +353,9 @@ int main(int argc, char **argv)
 	  // Perform perspective transformation
 	  cv::warpPerspective(dst,frame,transform_matrix,cv::Size(X_SIZE,Y_SIZE));
 
-	  cv::cvtColor(frame,dst,CV_BGR2GRAY);
+	  cv::cvtColor(frame,fgMask,CV_BGR2GRAY);
 	  //background subtraction
-	  cv::absdiff(average,dst,fgMask);
+	  cv::absdiff(average,fgMask,fgMask);
 	  
 	  //preprocessing to conglomerate vehicle blobs -------------------------------------------------
 	  Erosion(fgMask,3);
@@ -384,10 +363,6 @@ int main(int argc, char **argv)
 	  Dilation(fgMask,4);
 	  cv::threshold(fgMask,fgMask,MIN_THRESH,255,3);
 	  //preprocessing complete ----------------------------------------------------------------------
-	  
-	  //counting vehicles that have passed the half way point
-	  previousVehicles = passedVehicles;
-	  passedVehicles.clear();
 
 	  if (i% DETECT_RATE == DETECT_RATE / 2)
 	    {
@@ -429,7 +404,7 @@ int main(int argc, char **argv)
 			  if (objects.at(j).x - lanes.at(k) < LANE_THRESH && objects.at(j).x - lanes.at(k) > -1 * LANE_THRESH && vehicles.at(j).initial_x - lanes.at(k) < LANE_THRESH && vehicles.at(j).initial_x - lanes.at(k) > -1 * LANE_THRESH)
 			    {
 			      interlanecount++;
-				cv::rectangle(frame, objects.at(j), cv::Scalar(0,255,0),2,1);
+			      cv::rectangle(frame, objects.at(j), cv::Scalar(0,255,0),2,1);
 			    }
 			}
 
@@ -441,10 +416,6 @@ int main(int argc, char **argv)
 		    }
 		  vehicles.at(j).over_line = true;
 		}
-	      //else if (vehichles.at(j).type)
-	      //	{
-	      //  vehicles.at(j).over_line = false;
-	      //}
 	      
 	      //measuring velocity of detected vehicles. 
 	      if (i % DETECT_RATE == 0 && (objects.at(j).y + objects.at(j).height < frame.rows -4))
@@ -496,11 +467,11 @@ int main(int argc, char **argv)
 
 	  //showing the mask for debugging and optimization of background subtraction parameters
 	  cv::imshow("Mask",fgMask);
-	  
-	  cv::imshow("frame",frame); 
+	  cv::warpPerspective(frame,dst,inverse_matrix,cv::Size(dst.cols,dst.rows));
+	  cv::imshow("frame",dst); 
 	  
 	  //space for pause, escape or q to quit
-	  key = cv::waitKey(250);
+	  key = cv::waitKey(1);
 	  if(key == KEY_SPACE)
 	    key = cv::waitKey(0);
 	  if(key == KEY_ESC || key == 'q')
