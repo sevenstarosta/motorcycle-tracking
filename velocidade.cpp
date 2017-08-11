@@ -31,9 +31,9 @@ const int Y_SIZE = 400;
 // parameters for motorcycle detection. MAX_WIDTH prevents larger objects being detected.
 // MIN_HEIGHT specifies minimum height for motorcycle to be registered.
 // In the future, can also be used for car detection. Cars must be GREATER than max_width, and greater than min_height
-const int MAX_WIDTH = X_SIZE / 8;
+const int MAX_WIDTH = X_SIZE / 6;
 const int MAX_HEIGHT = Y_SIZE / 3;
-const int MIN_HEIGHT = Y_SIZE / 6;
+const int MIN_HEIGHT = Y_SIZE / 10;
 const int MIN_WIDTH = X_SIZE / 13;
 
 // Perspective transformation points
@@ -68,6 +68,7 @@ struct vehicle
 void Erosion(cv::Mat &img,int radius);
 void Detect(cv::Mat &img, std::vector<cv::Rect> &objects, std::vector<vehicle> &vehicles);
 void Dilation(cv::Mat &img, int radius);
+
 void onMouse(int event, int x, int y, int f, void*);
 void leftShoulder(int event, int x, int y, int f, void*);
 void rightShoulder(int event, int x, int y, int f, void*);
@@ -81,8 +82,7 @@ int main(int argc, char **argv)
 
   //Threshold value for detecting movement blobs. 255 - most difference, 0 - no difference.
   //make higher to reduce noise and prevent overlap, make lower to ensure vehicles are each one blob.
-  //30 for cam 71
-  const int MIN_THRESH = 27;
+  const int MIN_THRESH = 22;
 
   //Rate at which program prints information on count of vehicles and average velocities. 
   const int SAVE_RATE = 60000;
@@ -94,7 +94,7 @@ int main(int argc, char **argv)
   const int DETECT_RATE = 4;
 
   //for mean shift algorithm for detection.
-  const int MAX_ITER = 2;
+  const int MAX_ITER = 10;
 
   //epsilon for mean shift. mean numbers of pixels must move each time before stopping.
   const int MS_EPSILON = 1;
@@ -133,6 +133,9 @@ int main(int argc, char **argv)
 
   //number of vehicles/motorcycles that have passed.
   int count = 0;
+
+  //number of all other vehicles
+  int carcount = 0;
   
   //left and right prohibited areas
   int leftcount = 0;
@@ -173,10 +176,11 @@ int main(int argc, char **argv)
   cv::Mat frame, fgMask, dst;
 
   //used for mean shift
-  cv::TermCriteria criteria(MAX_ITER,MAX_ITER,MS_EPSILON);
+  cv::TermCriteria criteria(3,MAX_ITER,MS_EPSILON);
 
   //cv::VideoCapture cap("https://d1h84if288zv9w.cloudfront.net/7dias/0be3_477.stream/chunklist.m3u8");
-  cv::VideoCapture cap("Video_1.avi");
+  cv::VideoCapture cap("Video_2.avi");
+  cv::VideoCapture cap2("Video_2.avi");
   
   if(!cap.isOpened())
     {
@@ -189,6 +193,7 @@ int main(int argc, char **argv)
   cap >> frame;
 
   // Capturing user input to create perspective transform --------------------
+  
   cv::imshow("Perspective transform", frame);
   cv::setMouseCallback("Perspective transform",onMouse,NULL);
   
@@ -197,11 +202,14 @@ int main(int argc, char **argv)
       char c = cv::waitKey(1);
       if (c == KEY_ESC) break;
     }
+  
   // Done capturing user input for perspective transform ---------------------
 
   cv::Mat transform_matrix = cv::getPerspectiveTransform(source_points,dst_points);
   cv::Mat inverse_matrix = cv::getPerspectiveTransform(dst_points,source_points);
   //std::cout << transform_matrix << std::endl;
+  //std::cout << inverse_matrix << std::endl;
+  //std::cout << transform_matrix.inv() << std::endl;
   cv::warpPerspective(frame,dst,transform_matrix,cv::Size(X_SIZE,Y_SIZE));
   cv::imshow("Perspective transform",dst);
 
@@ -281,7 +289,7 @@ int main(int argc, char **argv)
   //std::cout << transform_matrix << std::endl;
 
   cv::namedWindow("Frame", 1);
-  cv::namedWindow("Mask", 1);
+  cv::namedWindow("Foreground Mask", 1);
 
   // Main loop ----------------------------------------------------------------------
   while(true)
@@ -294,7 +302,7 @@ int main(int argc, char **argv)
 
       //allow background to initialize before starting detection ------------------------
       
-      cap >> frame;
+      cap2 >> frame;
       cv::warpPerspective(frame,dst,transform_matrix,cv::Size(X_SIZE,Y_SIZE));
       cv::Mat average;
       cv::cvtColor(dst,dst,CV_BGR2GRAY);
@@ -337,8 +345,6 @@ int main(int argc, char **argv)
 	      average.at<uchar>(x,y) = image_values[X_SIZE * INIT_IMAGES * y + INIT_IMAGES * x + INIT_IMAGES / 2];
 	    }
 	}
-
-      std::cout << "Init time: " << (std::clock() - start_outer) / (double) CLOCKS_PER_SEC << std::endl;
       
       // Done initializing background ---------------------------------------------------
       
@@ -398,7 +404,7 @@ int main(int argc, char **argv)
 			{
 			  rightcount++;
 			}
-		      //check for proximity to lane lines.
+		      //check for proximity to lane lines. draw green boxes around motorcycles between lanes
 		      for(int k = 0; k < number_lanes;k++)
 			{
 			  if (objects.at(j).x - lanes.at(k) < LANE_THRESH && objects.at(j).x - lanes.at(k) > -1 * LANE_THRESH && vehicles.at(j).initial_x - lanes.at(k) < LANE_THRESH && vehicles.at(j).initial_x - lanes.at(k) > -1 * LANE_THRESH)
@@ -414,6 +420,11 @@ int main(int argc, char **argv)
 			  zigzagcount++;
 			}
 		    }
+		  vehicles.at(j).over_line = true;
+		}
+	      else if (objects.at(j).y >= (2*frame.rows/3) && !vehicles.at(j).over_line)
+		{
+		  carcount++;
 		  vehicles.at(j).over_line = true;
 		}
 	      
@@ -466,7 +477,7 @@ int main(int argc, char **argv)
 	    }
 
 	  //showing the mask for debugging and optimization of background subtraction parameters
-	  cv::imshow("Mask",fgMask);
+	  cv::imshow("Foreground Mask",fgMask);
 	  cv::warpPerspective(frame,dst,inverse_matrix,cv::Size(dst.cols,dst.rows));
 	  cv::imshow("frame",dst); 
 	  
@@ -515,6 +526,8 @@ int main(int argc, char **argv)
 
       std::cout << "Number of zig zaging motorcycles: " << zigzagcount << std::endl;
 
+      std::cout << "Number of other vehicles: " << carcount << std::endl;
+
       if (dst.empty() || dst.rows == 0 || dst.cols == 0)
 	break;
 
@@ -554,7 +567,7 @@ void Detect(cv::Mat &img, std::vector<cv::Rect> &objects, std::vector<vehicle> &
 
   for(int i =0; i < contours.size(); i++ )
     {
-      if (arcLength(contours.at(i),true) > 50)
+      if (arcLength(contours.at(i),true) > 35)
 	{ 
 	  ROI = cv::boundingRect(contours.at(i));
 	  
